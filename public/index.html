@@ -1,0 +1,172 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset='utf-8'>
+    <meta name='viewport' content='width=device-width, initial-scale=1, user-scalable=no'>
+    <meta name='mobile-web-app-capable' content='yes'>
+    <meta name='apple-mobile-web-app-capable' content='yes'>
+    <link rel='icon' type='image/png' sizes='32x32' href='favicon-32x32.png'>
+    <link rel='icon' type='image/png' sizes='96x96' href='favicon-96x96.png'>
+    <link rel='stylesheet' href='css/common.css'>
+
+    <title>Barebones AR</title>
+  </head>
+  <body>
+    <div id="overlay">
+      <header>
+          <div id="left-controller-pose"></div>
+          <div id="right-controller-pose"></div>
+          <div id="websocket"></div>
+          <button id="xr-button" class="barebones-button" disabled>XR not found</button>
+      </header>
+    </div>
+    <main style='text-align: center;'>
+    </main>
+    <script type="module">
+      // XR globals.
+      let xrButton = document.getElementById('xr-button');
+      let xrSession = null;
+      let xrRefSpace = null;
+
+      // WebGL scene globals.
+      let gl = null;
+
+      // WebSocket connection
+      const socket = new WebSocket("wss://192.168.1.182:8765");
+
+      socket.onopen = function() {
+          document.getElementById('websocket').innerHTML = 'WebSocket connection established'
+          console.log("WebSocket connection established");
+      };
+
+      socket.onerror = function(error) {
+          document.getElementById('websocket').innerHTML = 'WebSocket error'
+          console.error("WebSocket error:", error);
+      };
+
+      function sendPositionData(data) {
+          if (socket.readyState === WebSocket.OPEN) {
+              socket.send(JSON.stringify(data));
+          }
+      }
+
+      function checkSupportedState() {
+        navigator.xr.isSessionSupported('immersive-ar').then((supported) => {
+          if (supported) {
+            xrButton.innerHTML = 'Enter AR';
+          } else {
+            xrButton.innerHTML = 'AR not found';
+          }
+
+          xrButton.disabled = !supported;
+        });
+      }
+
+      function initXR() {
+        if (!window.isSecureContext) {
+          let message = "WebXR unavailable due to insecure context";
+          document.getElementById("warning-zone").innerText = message;
+        }
+
+        if (navigator.xr) {
+          xrButton.addEventListener('click', onButtonClicked);
+          navigator.xr.addEventListener('devicechange', checkSupportedState);
+          checkSupportedState();
+        }
+      }
+
+      function onButtonClicked() {
+        if (!xrSession) {
+            // Ask for an optional DOM Overlay, see https://immersive-web.github.io/dom-overlays/
+            navigator.xr.requestSession('immersive-ar', {
+                optionalFeatures: ['dom-overlay'],
+                domOverlay: {root: document.getElementById('overlay')}
+            }).then(onSessionStarted, onRequestSessionError);
+        } else {
+          xrSession.end();
+        }
+      }
+
+      function onSessionStarted(session) {
+        xrSession = session;
+        xrButton.innerHTML = 'Exit AR';
+
+        // Show which type of DOM Overlay got enabled (if any)
+        if (session.domOverlayState) {
+          document.getElementById('session-info').innerHTML = 'DOM Overlay type: ' + session.domOverlayState.type;
+        }
+
+        session.addEventListener('end', onSessionEnded);
+        let canvas = document.createElement('canvas');
+        gl = canvas.getContext('webgl', {
+          xrCompatible: true
+        });
+        session.updateRenderState({ baseLayer: new XRWebGLLayer(session, gl) });
+        session.requestReferenceSpace('local').then((refSpace) => {
+          xrRefSpace = refSpace;
+          session.requestAnimationFrame(onXRFrame);
+        });
+      }
+
+      function onRequestSessionError(ex) {
+        alert("Failed to start immersive AR session.");
+        console.error(ex.message);
+      }
+
+      function onEndSession(session) {
+        session.end();
+      }
+
+      function onSessionEnded(event) {
+        xrSession = null;
+        xrButton.innerHTML = 'Enter AR';
+        document.getElementById('session-info').innerHTML = '';
+        gl = null;
+      }
+
+      function onXRFrame(t, frame) {
+          let session = frame.session;
+
+          // Continue the frame loop
+          session.requestAnimationFrame(onXRFrame);
+
+          const inputSources = session.inputSources;
+          inputSources.forEach((inputSource) => {
+              let controllerPose = frame.getPose(inputSource.gripSpace, xrRefSpace);
+
+              if (controllerPose) {
+                  const pos = controllerPose.transform.position;
+                  const hand = inputSource.handedness;
+
+                  const data = {
+                      hand: hand,
+                      position: {
+                          x: pos.x,
+                          y: pos.y,
+                          z: pos.z
+                      }
+                  };
+
+                  // Send data to WebSocket server
+                  sendPositionData(data);
+
+                  // Update HTML
+                  if (hand === "left") {
+                      document.getElementById('left-controller-pose').innerText = `Left Controller Position: 
+                      X: ${pos.x.toFixed(3)}, 
+                      Y: ${pos.y.toFixed(3)}, 
+                      Z: ${pos.z.toFixed(3)}`;
+                  } else if (hand === "right") {
+                      document.getElementById('right-controller-pose').innerText = `Right Controller Position: 
+                      X: ${pos.x.toFixed(3)}, 
+                      Y: ${pos.y.toFixed(3)}, 
+                      Z: ${pos.z.toFixed(3)}`;
+                  }
+              }
+          });
+      }
+
+      initXR();
+    </script>
+  </body>
+</html>
